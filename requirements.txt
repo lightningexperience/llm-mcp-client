@@ -1,5 +1,8 @@
+# requirements.txt
 streamlit
-python-dotenv
 langchain
-langchain_groq
 langchain_core
+langchain-groq
+mcp
+langchain-mcp-adapters
+python-dotenv
