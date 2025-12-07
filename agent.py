@@ -1,92 +1,93 @@
-import streamlit as st
+import asyncio
 import os
-from dotenv import load_dotenv  # For loading .env file
-load_dotenv()  # Load environment variables from .env
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents import create_react_agent, AgentExecutor
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 
-from langchain.chains import LLMChain
-from langchain_core.prompts import (
-    ChatPromptTemplate,
-    HumanMessagePromptTemplate,
-    MessagesPlaceholder,
-)
-from langchain_core.messages import SystemMessage
-from langchain.chains.conversation.memory import ConversationBufferWindowMemory
-from langchain_groq import ChatGroq
+# --- 1. CONFIGURATION: Use Environment Variables ---
+# Recommended way to provide secrets and URLs (best for Heroku)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+JAPAN_PARTS_SERVER_URL = os.environ.get("JAPAN_PARTS_SERVER_URL")
 
-def main():
+# --- Error Check ---
+if not OPENAI_API_KEY or not JAPAN_PARTS_SERVER_URL:
+    raise ValueError(
+        "Please set OPENAI_API_KEY and JAPAN_PARTS_SERVER_URL "
+        "environment variables in your Heroku settings."
+    )
+# --- End Config ---
+
+async def run_agent_chat(user_query: str):
     """
-    Main entry point of the application. Sets up the Groq client, the Streamlit interface,
-    and handles the chat interaction.
+    Initializes the MCP client, loads tools, and runs the LLM agent.
     """
-    # Get Groq API key
+    
+    # 2. Initialize the MultiServerMCPClient
+    # This is the MCP Client that connects to your remote server.
+    print(f"Connecting to MCP server at: {JAPAN_PARTS_SERVER_URL}")
+    
+    mcp_client = MultiServerMCPClient(
+        servers={
+            "japan_parts": { # Give your server a unique name (label)
+                "url": JAPAN_PARTS_SERVER_URL,
+                "transport": "streamable-http"
+            }
+        }
+    )
+
+    # 3. Load MCP Tools and Translate for the LLM
+    # The adapter connects, discovers all tools on the server, and converts their
+    # definitions into the JSON Schema format that the LLM (like GPT-4o) expects.
     try:
-        groq_api_key = os.environ['GROQ_API_KEY']
-    except KeyError:
-        st.error("GROQ_API_KEY not found in environment variables.")
-        return
+        mcp_tools = await load_mcp_tools(mcp_client)
+    except Exception as e:
+        print(f"Failed to load tools from MCP server: {e}")
+        return "Sorry, the Japan Parts database is currently unavailable."
 
-    # The title and greeting message of the Streamlit application
-    st.title("Hey there!")
-    st.write("😃 I'm a custom AI Agent, your super friendly chatbot! I'm here to answer your questions, share cool info, or just have a fun chat. Oh, and did I mention? I'm *crazy fast*! 🚀 Let's talk! 😃 ")
+    if not mcp_tools:
+        return "Error: No tools were found on the MCP server. Cannot search for parts."
 
-    # Add customization options to the sidebar
-    st.sidebar.title('Customize')
-    system_prompt = st.sidebar.text_input("System prompt:")
-    model = st.sidebar.selectbox(
-        'Choose a model',
-        ['llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768']
+    print(f"✅ Successfully loaded {len(mcp_tools)} tool(s) from the MCP server.")
+
+    # 4. Configure the LLM and Agent Prompt
+    llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=OPENAI_API_KEY)
+    
+    # CRITICAL: The system prompt tells the LLM WHEN and WHY to use the tool.
+    system_prompt = (
+        "You are an expert parts agent. Your primary role is to answer questions about "
+        "Japan parts pricing, stock, or specifications. "
+        "ALWAYS use the loaded tool(s) for these queries. "
+        "Do not guess or use your general knowledge for parts data."
     )
-    conversational_memory_length = st.sidebar.slider('Conversational memory length:', 1, 10, value=5)
-
-    memory = ConversationBufferWindowMemory(
-        k=conversational_memory_length, 
-        memory_key="chat_history", 
-        return_messages=True
-    )
-
-    user_question = st.text_input("Ask a question:")
-
-    # Initialize session state variable for chat history if not already set
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    else:
-        # Load existing history into memory
-        for message in st.session_state.chat_history:
-            memory.save_context(
-                {'input': message['human']},
-                {'output': message['AI']}
-            )
-
-    # Initialize Groq LangChain chat object and conversation
-    groq_chat = ChatGroq(
-        groq_api_key=groq_api_key, 
-        model_name=model
+    
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            ("human", "{input}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ]
     )
 
-    # Process user input if provided
-    if user_question:
-        # Construct a chat prompt template using various components
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                SystemMessage(content=system_prompt),
-                MessagesPlaceholder(variable_name="chat_history"),
-                HumanMessagePromptTemplate.from_template("{human_input}"),
-            ]
-        )
+    # 5. Create the Agent
+    # The agent uses the LLM's function-calling capability and the loaded tools.
+    agent = create_react_agent(llm, mcp_tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=mcp_tools, verbose=True)
 
-        # Create a conversation chain using the LangChain LLM
-        conversation = LLMChain(
-            llm=groq_chat,
-            prompt=prompt,
-            verbose=True,
-            memory=memory,
-        )
-        
-        # Generate the chatbot's response
-        response = conversation.predict(human_input=user_question)
-        message = {'human': user_question, 'AI': response}
-        st.session_state.chat_history.append(message)
-        st.write("Chatbot:", response)
+    # 6. Run the Agent (Handles the Full Tool-Calling Loop)
+    print("\n--- Running Agent ---")
+    result = await agent_executor.ainvoke({"input": user_query})
 
+    return result['output']
+
+# --- Main Execution ---
 if __name__ == "__main__":
-    main()
+    # Example Query - The agent will decide to call the MCP tool here
+    query = "What is the price and current stock count for the JDM-500 turbo manifold?"
+    
+    # In your UI, you would call this function when the user submits a question.
+    final_answer = asyncio.run(run_agent_chat(query))
+    
+    print("\n--- Final Answer ---")
+    print(final_answer)
