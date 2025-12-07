@@ -1,9 +1,11 @@
 # requirements.txt
 streamlit
-langchain>=0.1.0        
-langchain-core>=0.1.0
+# Ensure a recent, stable version of core packages
+langchain>=0.2.0
+langchain-core>=0.2.0
+# CRUCIAL: AgentExecutor is now located in this package
+langchain-community>=0.0.30
 langchain-groq
-langchain-community>=0.0.1 # Essential for resolving AgentExecutor import issues
 mcp
 langchain-mcp-adapters
 python-dotenv
