@@ -1,4 +1,23 @@
-# requirements.txt (Heroku-ready, stable AI agent stack)
+# requirements.txt (Heroku-ready, MCP + LangChain + Groq stack)
+
+# --- Streamlit UI ---
 streamlit==1.39.0
-groq==0.11.0
+
+# --- Core LangChain packages ---
+langchain==0.2.9
+langchain-core==0.2.23
+langchain-community==0.2.6
+
+# --- Groq LLM support ---
+langchain-groq==0.1.6
+
+# --- MCP Client + Tools ---
 mcp==1.1.2
+langchain-mcp-adapters==0.1.4
+
+# --- HTTP client (needed by MCP) ---
+httpx==0.27.0
+
+# --- Support packages ---
+pydantic==2.7.1
+python-dotenv==1.0.1
