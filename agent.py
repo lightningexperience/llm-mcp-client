@@ -5,27 +5,25 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
-# Modern Agent Imports (Requires langchain >= 0.2.14)
+# --- NEW IMPORTS: These replace LLMChain ---
 from langchain.agents import create_tool_calling_agent, AgentExecutor
-
-# MCP Imports
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
-# --- Configuration ---
+# --- CONFIGURATION ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 JAPAN_PARTS_SERVER_URL = os.environ.get("JAPAN_PARTS_SERVER_URL")
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# Using the model from your Example 1
+GROQ_MODEL = "llama-3.3-70b-versatile" 
 
-# --- Async Setup for MCP ---
-async def build_agent_executor():
+# --- ASYNC SETUP (Connects to MCP) ---
+async def create_agent_executor():
     """
-    Connects to MCP, loads tools, and creates the LangChain Agent.
-    Returns: The AgentExecutor (runnable object).
+    Connects to the MCP server, loads tools, and builds the Agent.
     """
     mcp_tools = []
     
-    # 1. Load MCP Tools (if URL is set)
+    # 1. Load Tools from your MCP Server
     if JAPAN_PARTS_SERVER_URL:
         try:
             client = MultiServerMCPClient(
@@ -37,71 +35,75 @@ async def build_agent_executor():
                 }
             )
             mcp_tools = await load_mcp_tools(client)
-            print(f"DEBUG: Loaded {len(mcp_tools)} tools from MCP.")
         except Exception as e:
-            print(f"DEBUG: MCP Connection failed: {e}")
+            print(f"MCP Connection Error: {e}")
 
-    # 2. Setup LLM
+    # 2. Initialize Groq (Same as your Example 2)
     llm = ChatGroq(
         model=GROQ_MODEL, 
         temperature=0, 
         api_key=GROQ_API_KEY
     )
 
-    # 3. Setup Prompt (Must include 'chat_history' and 'agent_scratchpad')
+    # 3. Define Prompt
+    # We use 'agent_scratchpad' to let the AI "think" about tool results
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            "You are a friendly, helpful AI Agent. "
-            "You have access to a Japan Parts Database via tools. "
-            "ALWAYS use the tool if the user asks about parts, prices, or stock. "
-            "If the tool returns data, answer based on that data."
+            "You are a helpful, friendly AI Agent. "
+            "You have access to a Japan Parts Database. "
+            "ALWAYS use the available tools to find prices, stock, or specs. "
+            "Do not guess part details."
         )),
         MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
 
-    # 4. Create Agent
+    # 4. Create the Agent (The Brain)
     agent = create_tool_calling_agent(llm, mcp_tools, prompt)
 
-    # 5. Create Executor
+    # 5. Create the Executor (The Runner)
+    # This replaces 'conversation = LLMChain(...)' from your example
     agent_executor = AgentExecutor(agent=agent, tools=mcp_tools, verbose=True)
     
     return agent_executor, len(mcp_tools)
 
-# --- Helper to Run Async in Streamlit ---
-async def run_interaction(agent_executor, user_input, chat_history):
-    response = await agent_executor.ainvoke({
-        "input": user_input,
-        "chat_history": chat_history
+# --- HELPER: Run Async Agent in Sync Streamlit ---
+async def run_chat(executor, user_input, history):
+    result = await executor.ainvoke({
+        "input": user_input, 
+        "chat_history": history
     })
-    return response["output"]
+    return result["output"]
 
-# --- Main Streamlit UI ---
+# --- MAIN UI (Based on your Example 2) ---
 def main():
-    st.set_page_config(page_title="Friendly MCP Agent", layout="wide")
-    st.title("Hey there! 🇯🇵")
-    st.write("I'm your friendly AI agent with access to the Japan Parts Database! 🚀")
+    st.set_page_config(page_title="Groq MCP Agent", layout="wide")
+    st.title("😃 Groq + Japan Parts Agent")
+    st.write("I'm your friendly chatbot! I can look up JDM parts for you. 🚀")
 
-    # Check API Keys
+    # Sidebar just like your example
+    st.sidebar.title('Customize')
+    st.sidebar.write(f"**Model:** {GROQ_MODEL}")
+
+    # Check for API Key
     if not GROQ_API_KEY:
-        st.error("Error: GROQ_API_KEY not found in environment.")
+        st.error("GROQ_API_KEY not found in environment variables.")
         st.stop()
 
-    # --- Initialize Session State ---
+    # --- Session State Management ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Initialize the Agent ONLY ONCE
+    # Initialize Agent ONLY ONCE (to avoid reconnecting to MCP every click)
     if "agent_executor" not in st.session_state:
         with st.spinner("Connecting to MCP Server..."):
-            # We run the async setup synchronously here once
-            executor, tool_count = asyncio.run(build_agent_executor())
+            executor, count = asyncio.run(create_agent_executor())
             st.session_state.agent_executor = executor
-            if tool_count > 0:
-                st.success(f"Connected! {tool_count} Tools Loaded.")
+            if count > 0:
+                st.sidebar.success(f"✅ Connected: {count} Tools")
             else:
-                st.warning("No tools loaded (Check Server URL). Running in chat-only mode.")
+                st.sidebar.warning("⚠️ No Tools Found (Check URL)")
 
     # --- Display Chat History ---
     for msg in st.session_state.messages:
@@ -110,30 +112,24 @@ def main():
             st.markdown(msg.content)
 
     # --- Handle User Input ---
-    if prompt := st.chat_input("Ask about parts, or just say hi..."):
-        # 1. Display User Message
+    if prompt := st.chat_input("Ask about part prices..."):
+        # 1. Show User Message
         st.session_state.messages.append(HumanMessage(content=prompt))
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # 2. Run Agent
+        # 2. Generate Response
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    # Run the async agent logic
-                    response_text = asyncio.run(
-                        run_interaction(
-                            st.session_state.agent_executor, 
-                            prompt, 
-                            st.session_state.messages[:-1] # Pass history excluding current prompt
-                        )
-                    )
-                    st.markdown(response_text)
-                    
-                    # 3. Save Assistant Response
-                    st.session_state.messages.append(AIMessage(content=response_text))
-                except Exception as e:
-                    st.error(f"Something went wrong: {e}")
+            with st.spinner("Checking database..."):
+                # We exclude the *current* prompt from history passing to avoid duplication
+                history = st.session_state.messages[:-1]
+                
+                response_text = asyncio.run(
+                    run_chat(st.session_state.agent_executor, prompt, history)
+                )
+                
+                st.markdown(response_text)
+                st.session_state.messages.append(AIMessage(content=response_text))
 
 if __name__ == "__main__":
     main()
