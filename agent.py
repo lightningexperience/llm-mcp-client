@@ -1,220 +1,173 @@
-# agent.py v2.0 - MCP-powered Groq Chat Agent (Heroku-ready)
+# agent.py - MCP-powered Groq Chat Agent with LangChain (Heroku-ready)
 
 import os
 import sys
-import json
 import asyncio
 import logging
 import streamlit as st
 from typing import List, Dict, Any
 
-# Groq for LLM
-from groq import Groq
+# LangChain imports
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 
-# MCP Client
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+# MCP imports
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 JAPAN_PARTS_SERVER_URL = os.environ.get("JAPAN_PARTS_SERVER_URL")
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 logger = logging.getLogger("MCPChatAgent")
 logging.basicConfig(level=logging.INFO)
 
 if not GROQ_API_KEY:
-    st.error("GROQ_API_KEY is not set in Heroku Config Vars.")
+    st.error("❌ GROQ_API_KEY is not set in Heroku Config Vars.")
     sys.exit(1)
 
 # -----------------------------------------------------------------------------
-# MCP Client Setup
+# Initialize Agent with MCP Tools
 # -----------------------------------------------------------------------------
-class MCPToolManager:
-    def __init__(self):
-        self.session = None
-        self.tools = []
-        self.initialized = False
+async def initialize_agent():
+    """Initialize LangChain agent with MCP tools"""
     
-    async def initialize(self):
-        """Initialize MCP connection and load tools"""
-        if not JAPAN_PARTS_SERVER_URL:
-            logger.warning("JAPAN_PARTS_SERVER_URL not set - MCP tools disabled")
-            return
-        
+    # Load MCP tools
+    mcp_tools = []
+    if not JAPAN_PARTS_SERVER_URL:
+        st.warning("⚠️ JAPAN_PARTS_SERVER_URL not set - MCP tools disabled")
+    else:
         try:
-            # For streamable-http, we need a proxy
-            # Using npx supergateway as the bridge
-            server_params = StdioServerParameters(
-                command="npx",
-                args=[
-                    "-y",
-                    "supergateway",
-                    "--streamableHttp",
-                    JAPAN_PARTS_SERVER_URL
-                ]
+            # Create MCP client
+            client = MultiServerMCPClient(
+                servers={
+                    "japan_parts_db": {
+                        "url": JAPAN_PARTS_SERVER_URL,
+                        "transport": "streamable-http"
+                    }
+                }
             )
             
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    self.session = session
-                    await session.initialize()
-                    
-                    # List available tools
-                    tools_result = await session.list_tools()
-                    self.tools = tools_result.tools
-                    self.initialized = True
-                    
-                    logger.info(f"MCP: Loaded {len(self.tools)} tool(s)")
-                    for tool in self.tools:
-                        logger.info(f"  - {tool.name}: {tool.description}")
-                        
+            # Load tools from MCP server
+            mcp_tools = await load_mcp_tools(client)
+            logger.info(f"✅ Loaded {len(mcp_tools)} MCP tool(s)")
+            
+            for tool in mcp_tools:
+                logger.info(f"  📦 {tool.name}: {tool.description}")
+                
         except Exception as e:
-            logger.error(f"MCP initialization failed: {e}")
-            self.initialized = False
+            logger.error(f"❌ MCP initialization error: {e}")
+            st.error(f"MCP connection failed: {e}")
     
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
-        """Call an MCP tool"""
-        if not self.initialized:
-            return "MCP tools not available"
-        
-        try:
-            result = await self.session.call_tool(tool_name, arguments)
-            # Extract text from result
-            if result.content:
-                return str(result.content[0].text)
-            return "No result from tool"
-        except Exception as e:
-            logger.error(f"Tool call error: {e}")
-            return f"Error calling tool: {e}"
+    # Initialize Groq LLM
+    llm = ChatGroq(
+        model=GROQ_MODEL,
+        temperature=0.3,
+        api_key=GROQ_API_KEY
+    )
     
-    def get_tools_description(self) -> str:
-        """Get formatted description of available tools"""
-        if not self.tools:
-            return "No MCP tools available."
-        
-        descriptions = []
-        for tool in self.tools:
-            params = json.dumps(tool.inputSchema.get("properties", {}), indent=2)
-            descriptions.append(
-                f"Tool: {tool.name}\n"
-                f"Description: {tool.description}\n"
-                f"Parameters: {params}\n"
-            )
-        return "\n".join(descriptions)
+    # Create prompt template
+    system_prompt = """You are a helpful assistant for Japan HQ auto parts inventory.
+
+You have access to MCP tools that can search the live parts database.
+
+When users ask about:
+- Part availability, stock, or inventory
+- Searching for specific parts
+- Part specifications or details
+
+USE THE AVAILABLE TOOLS to get accurate, real-time information.
+
+For general questions, answer directly without tools.
+
+Be concise, accurate, and helpful."""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad")
+    ])
+    
+    # Create agent
+    agent = create_tool_calling_agent(
+        llm=llm,
+        tools=mcp_tools,
+        prompt=prompt
+    )
+    
+    # Create agent executor
+    agent_executor = AgentExecutor(
+        agent=agent,
+        tools=mcp_tools,
+        verbose=True,
+        handle_parsing_errors=True,
+        max_iterations=3
+    )
+    
+    return agent_executor, mcp_tools
 
 # -----------------------------------------------------------------------------
-# Groq LLM Integration
+# Process user query
 # -----------------------------------------------------------------------------
-def call_groq_with_tools(user_message: str, mcp_manager: MCPToolManager) -> str:
-    """Call Groq LLM with tool awareness"""
-    
-    client = Groq(api_key=GROQ_API_KEY)
-    
-    # Build system prompt with tool info
-    tools_info = mcp_manager.get_tools_description()
-    system_prompt = f"""You are a helpful assistant for Japan HQ auto parts inventory.
-
-You have access to the following tools:
-{tools_info}
-
-When the user asks about parts, inventory, stock, or searches:
-1. Identify if you need to use a tool
-2. If yes, respond EXACTLY in this format:
-USE_TOOL: tool_name
-ARGUMENTS: {{"param": "value"}}
-
-3. If no tool needed, answer directly.
-
-Be concise and helpful."""
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message}
-    ]
-    
+async def process_query(query: str, agent_executor: AgentExecutor, chat_history: List) -> str:
+    """Process user query through the agent"""
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=1024
-        )
+        # Convert chat history to LangChain message format
+        lc_history = []
+        for msg in chat_history[-6:]:  # Keep last 6 messages for context
+            if msg["role"] == "user":
+                lc_history.append(HumanMessage(content=msg["content"]))
+            else:
+                lc_history.append(AIMessage(content=msg["content"]))
         
-        return response.choices[0].message.content.strip()
+        # Run agent
+        result = await agent_executor.ainvoke({
+            "input": query,
+            "chat_history": lc_history
+        })
+        
+        return result["output"]
         
     except Exception as e:
-        logger.error(f"Groq API error: {e}")
-        return f"Error contacting LLM: {e}"
-
-async def process_user_query(user_message: str, mcp_manager: MCPToolManager) -> str:
-    """Process user query with tool calling if needed"""
-    
-    # Get LLM response
-    llm_response = call_groq_with_tools(user_message, mcp_manager)
-    
-    # Check if LLM wants to use a tool
-    if "USE_TOOL:" in llm_response:
-        try:
-            lines = llm_response.split("\n")
-            tool_name = None
-            arguments = {}
-            
-            for line in lines:
-                if line.startswith("USE_TOOL:"):
-                    tool_name = line.replace("USE_TOOL:", "").strip()
-                elif line.startswith("ARGUMENTS:"):
-                    args_str = line.replace("ARGUMENTS:", "").strip()
-                    arguments = json.loads(args_str)
-            
-            if tool_name:
-                # Call the tool
-                tool_result = await mcp_manager.call_tool(tool_name, arguments)
-                
-                # Get final response from LLM with tool result
-                final_prompt = f"""The user asked: {user_message}
-
-You called the tool '{tool_name}' and got this result:
-{tool_result}
-
-Now provide a helpful answer to the user based on this result."""
-
-                client = Groq(api_key=GROQ_API_KEY)
-                final_response = client.chat.completions.create(
-                    model=GROQ_MODEL,
-                    messages=[{"role": "user", "content": final_prompt}],
-                    temperature=0.3
-                )
-                
-                return final_response.choices[0].message.content.strip()
-        
-        except Exception as e:
-            logger.error(f"Tool execution error: {e}")
-            return f"I tried to use a tool but encountered an error: {e}"
-    
-    # No tool needed, return LLM response directly
-    return llm_response
+        logger.error(f"❌ Agent execution error: {e}")
+        return f"Sorry, I encountered an error: {e}"
 
 # -----------------------------------------------------------------------------
 # Streamlit UI
 # -----------------------------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Japan Parts MCP Agent", layout="wide")
-    st.title("🇯🇵 Japan HQ Parts Assistant (Groq + MCP)")
+    st.set_page_config(
+        page_title="Japan Parts MCP Agent",
+        page_icon="🇯🇵",
+        layout="wide"
+    )
     
-    # Initialize MCP manager
-    if "mcp_manager" not in st.session_state:
-        st.session_state.mcp_manager = MCPToolManager()
-        asyncio.run(st.session_state.mcp_manager.initialize())
+    st.title("🇯🇵 Japan HQ Parts Assistant")
+    st.caption("Powered by Groq Llama 3.3 + MCP")
+    
+    # Initialize agent (only once)
+    if "agent_executor" not in st.session_state:
+        with st.spinner("🔄 Initializing agent and connecting to MCP server..."):
+            agent_executor, mcp_tools = asyncio.run(initialize_agent())
+            st.session_state.agent_executor = agent_executor
+            st.session_state.mcp_tools = mcp_tools
         
-        if st.session_state.mcp_manager.initialized:
-            st.success(f"✅ Connected to MCP server with {len(st.session_state.mcp_manager.tools)} tool(s)")
+        # Show connection status
+        if mcp_tools:
+            st.success(f"✅ Connected! {len(mcp_tools)} MCP tool(s) available")
+            with st.expander("📦 Available Tools"):
+                for tool in mcp_tools:
+                    st.write(f"**{tool.name}**: {tool.description}")
         else:
-            st.warning("⚠️ MCP tools not available - LLM will answer without tools")
+            st.warning("⚠️ No MCP tools available - agent will answer without tools")
     
-    # Chat history
+    # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
@@ -223,23 +176,48 @@ def main():
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
     
-    # User input
-    if prompt := st.chat_input("Ask about parts, stock, or inventory..."):
+    # Chat input
+    if prompt := st.chat_input("Ask about parts, stock, inventory..."):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # Get response
-        with st.spinner("Thinking..."):
-            response = asyncio.run(
-                process_user_query(prompt, st.session_state.mcp_manager)
-            )
-        
-        # Add assistant message
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        # Get agent response
         with st.chat_message("assistant"):
+            with st.spinner("🤔 Thinking..."):
+                response = asyncio.run(
+                    process_query(
+                        prompt,
+                        st.session_state.agent_executor,
+                        st.session_state.messages
+                    )
+                )
             st.markdown(response)
+        
+        # Add assistant message to history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+    
+    # Sidebar info
+    with st.sidebar:
+        st.header("ℹ️ About")
+        st.write("""
+        This agent can:
+        - Search Japan HQ parts database
+        - Check inventory and stock levels
+        - Provide part specifications
+        - Answer general questions
+        """)
+        
+        st.divider()
+        
+        if st.button("🔄 Reset Chat"):
+            st.session_state.messages = []
+            st.rerun()
+        
+        st.divider()
+        st.caption(f"Model: {GROQ_MODEL}")
+        st.caption(f"MCP Server: {'✅ Connected' if st.session_state.mcp_tools else '❌ Disconnected'}")
 
 if __name__ == "__main__":
     main()
