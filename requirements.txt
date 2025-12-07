@@ -1,11 +1,23 @@
-# requirements.txt
-streamlit
-# Ensure a recent, stable version of core packages
-langchain>=0.2.0
-langchain-core>=0.2.0
-# CRUCIAL: AgentExecutor is now located in this package
-langchain-community>=0.0.30
-langchain-groq
-mcp
-langchain-mcp-adapters
-python-dotenv
+# requirements.txt (Heroku-ready, stable AI agent stack)
+
+# --- Core LangChain packages (stable versions) ---
+langchain==0.2.9
+langchain-core==0.2.23
+langchain-community==0.2.6
+
+# --- Groq LLM support ---
+langchain-groq==0.1.6
+
+# --- MCP Client + Tools ---
+mcp==1.1.2
+langchain-mcp-adapters==0.1.4
+
+# --- Streamlit for UI ---
+streamlit==1.36.0
+
+# --- Async http library (needed by MCP client) ---
+httpx==0.27.0
+
+# --- Standard support packages ---
+pydantic==2.7.1
+python-dotenv==1.0.1
