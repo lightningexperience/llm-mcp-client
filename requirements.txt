@@ -1,16 +1,8 @@
-# requirements.txt - Fixed dependency versions
-
-# Streamlit
-streamlit==1.39.0
-
-# Groq (standalone - proven to work)
-groq==0.11.0
-
-# MCP Adapters (requires langchain-core>=0.3.36)
-langchain-core==0.3.36
-langchain-mcp-adapters==0.1.4
-mcp==1.1.2
-
-# Dependencies
-httpx==0.27.2
-pydantic==2.10.4
+streamlit
+langchain>=0.2.10
+langchain-core>=0.2.20
+langchain-community>=0.2.10
+langchain-groq
+mcp
+langchain-mcp-adapters
+python-dotenv
