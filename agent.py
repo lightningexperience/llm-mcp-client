@@ -3,7 +3,7 @@ import os
 import sys
 from langchain_groq import ChatGroq # NEW: Import Groq's LangChain integration
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents import create_react_agent, AgentExecutor
+from langchain.agents import create_agent, AgentExecutor
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
