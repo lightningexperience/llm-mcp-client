@@ -1,1 +1,2 @@
-web: sh setup.sh && streamlit run agent.py --server.port=$PORT
+# Procfile
+web: sh -c 'streamlit run agent.py --server.port $PORT'
