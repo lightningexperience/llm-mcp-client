@@ -1,9 +1,10 @@
 streamlit
-# We force 0.2.x or higher to ensure create_tool_calling_agent exists
+# Force versions that support create_tool_calling_agent
 langchain>=0.2.14
 langchain-core>=0.2.33
 langchain-community>=0.2.12
 langchain-groq>=0.1.9
+# MCP Libraries
 mcp
 langchain-mcp-adapters
 python-dotenv
