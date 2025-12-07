@@ -1,36 +1,41 @@
 import asyncio
 import os
-from langchain_openai import ChatOpenAI
+import sys
+from langchain_groq import ChatGroq # NEW: Import Groq's LangChain integration
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_react_agent, AgentExecutor
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
-# --- 1. CONFIGURATION: Use Environment Variables ---
-# Recommended way to provide secrets and URLs (best for Heroku)
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# --- 1. CONFIGURATION: Use Heroku Environment Variables ---
+# The environment variables must be set in your Heroku Config Vars.
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 JAPAN_PARTS_SERVER_URL = os.environ.get("JAPAN_PARTS_SERVER_URL")
 
+# The specific model you requested
+GROQ_MODEL = "llama-3.3-70b-versatile" 
+
 # --- Error Check ---
-if not OPENAI_API_KEY or not JAPAN_PARTS_SERVER_URL:
-    raise ValueError(
-        "Please set OPENAI_API_KEY and JAPAN_PARTS_SERVER_URL "
-        "environment variables in your Heroku settings."
-    )
+if not GROQ_API_KEY:
+    print("Error: GROQ_API_KEY environment variable not set. Cannot run LLM.")
+    sys.exit(1)
+if not JAPAN_PARTS_SERVER_URL:
+    print("Error: JAPAN_PARTS_SERVER_URL environment variable not set. Cannot run MCP client.")
+    # Allow running for general queries, but print a warning
+    # sys.exit(1) # Uncomment this if you require the parts database to be available
 # --- End Config ---
+
 
 async def run_agent_chat(user_query: str):
     """
-    Initializes the MCP client, loads tools, and runs the LLM agent.
+    Initializes the Groq LLM and the MCP client, then runs the agent.
     """
     
     # 2. Initialize the MultiServerMCPClient
-    # This is the MCP Client that connects to your remote server.
     print(f"Connecting to MCP server at: {JAPAN_PARTS_SERVER_URL}")
-    
     mcp_client = MultiServerMCPClient(
         servers={
-            "japan_parts": { # Give your server a unique name (label)
+            "japan_parts_db": { # A label for the server
                 "url": JAPAN_PARTS_SERVER_URL,
                 "transport": "streamable-http"
             }
@@ -38,28 +43,26 @@ async def run_agent_chat(user_query: str):
     )
 
     # 3. Load MCP Tools and Translate for the LLM
-    # The adapter connects, discovers all tools on the server, and converts their
-    # definitions into the JSON Schema format that the LLM (like GPT-4o) expects.
     try:
         mcp_tools = await load_mcp_tools(mcp_client)
     except Exception as e:
-        print(f"Failed to load tools from MCP server: {e}")
-        return "Sorry, the Japan Parts database is currently unavailable."
+        print(f"⚠️ Warning: Failed to load tools from MCP server. Will only answer with general knowledge. Error: {e}")
+        mcp_tools = []
 
-    if not mcp_tools:
-        return "Error: No tools were found on the MCP server. Cannot search for parts."
-
-    print(f"✅ Successfully loaded {len(mcp_tools)} tool(s) from the MCP server.")
-
-    # 4. Configure the LLM and Agent Prompt
-    llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=OPENAI_API_KEY)
+    if mcp_tools:
+        print(f"✅ Successfully loaded {len(mcp_tools)} tool(s) from the MCP server.")
     
-    # CRITICAL: The system prompt tells the LLM WHEN and WHY to use the tool.
+    # 4. Configure the LLM (Using ChatGroq)
+    # LangChain handles passing the API key from the environment variable automatically.
+    llm = ChatGroq(model=GROQ_MODEL, temperature=0) # Groq is very fast, low temperature is ideal for agents.
+    
+    # CRITICAL: The system prompt for tool use enforcement.
     system_prompt = (
-        "You are an expert parts agent. Your primary role is to answer questions about "
-        "Japan parts pricing, stock, or specifications. "
-        "ALWAYS use the loaded tool(s) for these queries. "
-        "Do not guess or use your general knowledge for parts data."
+        "You are an expert parts agent powered by Groq and Llama 3. Your role is to "
+        "provide accurate, real-time data on Japan parts pricing, stock, or "
+        "specifications. You MUST use the available tool(s) for any query about "
+        "specific parts, stock, or price, as your internal knowledge is outdated. "
+        "Do not answer these questions without the tool output."
     )
     
     prompt = ChatPromptTemplate.from_messages(
@@ -71,23 +74,24 @@ async def run_agent_chat(user_query: str):
     )
 
     # 5. Create the Agent
-    # The agent uses the LLM's function-calling capability and the loaded tools.
+    # The AgentExecutor handles the multi-step process: LLM -> Tool Call -> MCP Execution -> LLM Synthesis.
     agent = create_react_agent(llm, mcp_tools, prompt)
     agent_executor = AgentExecutor(agent=agent, tools=mcp_tools, verbose=True)
 
-    # 6. Run the Agent (Handles the Full Tool-Calling Loop)
-    print("\n--- Running Agent ---")
+    # 6. Run the Agent
+    print(f"\n--- Running Agent for Query: '{user_query}' ---")
     result = await agent_executor.ainvoke({"input": user_query})
 
     return result['output']
 
-# --- Main Execution ---
+# --- Main Execution Loop (Simulating a UI Interaction) ---
 if __name__ == "__main__":
-    # Example Query - The agent will decide to call the MCP tool here
-    query = "What is the price and current stock count for the JDM-500 turbo manifold?"
     
-    # In your UI, you would call this function when the user submits a question.
-    final_answer = asyncio.run(run_agent_chat(query))
+    # Example Query - This should trigger the MCP tool call
+    test_query = "What is the price and stock count for the JDM-500 turbo manifold?"
     
-    print("\n--- Final Answer ---")
+    # Run the main function
+    final_answer = asyncio.run(run_agent_chat(test_query))
+    
+    print("\n--- Final Agent Answer ---")
     print(final_answer)
