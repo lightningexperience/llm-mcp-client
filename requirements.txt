@@ -1,8 +1,9 @@
 # requirements.txt
 streamlit
-langchain
-langchain_core
+langchain>=0.1.0        
+langchain-core>=0.1.0
 langchain-groq
+langchain-community>=0.0.1 # Essential for resolving AgentExecutor import issues
 mcp
 langchain-mcp-adapters
 python-dotenv
