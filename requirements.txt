@@ -1,4 +1,4 @@
-# requirements.txt - Minimal working stack
+# requirements.txt - Fixed dependency versions
 
 # Streamlit
 streamlit==1.39.0
@@ -6,8 +6,8 @@ streamlit==1.39.0
 # Groq (standalone - proven to work)
 groq==0.11.0
 
-# MCP Adapters (for tool loading)
-langchain-core==0.3.28
+# MCP Adapters (requires langchain-core>=0.3.36)
+langchain-core==0.3.36
 langchain-mcp-adapters==0.1.4
 mcp==1.1.2
 
