@@ -1,9 +1,10 @@
 streamlit
-# These versions enable the modern Agent features you need
+# Force strict modern versions
 langchain>=0.2.14
 langchain-core>=0.2.33
 langchain-community>=0.2.12
 langchain-groq>=0.1.9
+# MCP
 mcp
 langchain-mcp-adapters
 python-dotenv
